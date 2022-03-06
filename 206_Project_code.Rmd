@@ -1,0 +1,245 @@
+---
+title: "206_Project_code"
+output: html_document
+---
+```{r}
+install.packages("GGally")
+install.packages("caret")
+install.packages("scatterplot3d")
+install.packages("Metrics")
+install.packages("lars")
+install.packages("glmnet")
+install.packages("randomForest") 
+install.packages("stats")
+```
+
+```{r}
+#Data Preprocessing
+ab<-read.table("/Users/xixi/Library/Mobile Documents/com~apple~CloudDocs/206/Project/abalone.txt",sep = ",")
+names(ab) = c("Sex","Length","Diameter","Height","Whole weight","Shucked weight","Viscera weight","Shell weight","Rings")
+```
+
+```{r}
+#Missing values
+sum(is.na(ab))
+#Quality test
+summary(ab$Height==0)#2 data points,which height=0, whole weight>0的data point
+ab<-ab[which(ab$'Height' != 0),]
+#Outliers
+sapply(ab, class)
+boxplot(ab[,2:8],main='Box plot')
+```
+
+```{r}
+#Data transformation
+par(mfrow=c(2,4))
+ab29<-ab[,2:9]
+for(i in 1:8) {
+hist(ab29[, i], main=paste("Histogram of", names(ab29)[i]))}
+
+#choose how to transform `Diameter`
+par(mfrow=c(1,3))
+with(ab29,{
+  hist(log(`Diameter`))
+  hist((`Diameter`)^(1/3))
+  hist((`Diameter`)^2)
+})
+ab$`Diameter`<-(ab$`Diameter`)^2#(`Diameter`)^2
+
+#choose how to transform `Shucked weight`
+par(mfrow=c(1,3))
+with(ab29,{
+  hist(log(`Shucked weight`))
+  hist(1/(`Shucked weight`))
+  hist(sqrt(`Shucked weight`))
+})
+ab$`Shucked weight`<-sqrt(ab$`Shucked weight`)#sqrt(`Shucked weight`)
+ab$`Viscera weight`<-sqrt(ab$`Viscera weight`)#sqrt(`Viscera weight`)
+ab$`Shell weight`<-sqrt(ab$`Shell weight`)#sqrt(`Shell weight`)
+```
+
+```{r}
+#ggpairs
+library(GGally)
+ggpairs(ab,aes(color=Sex,alpha=0.8))+theme_grey(base_size=9)+theme_bw()+scale_colour_manual(values=c("#E69F00", "#56B4E9", "#009E73"))
+```
+
+
+```{r}
+#combine female and male as noninfant
+ab$'Sex'[which(ab$'Sex' != 'I')]<- 'NI'
+
+#Train test split
+set.seed(10) 
+sub<-sample(1:nrow(ab),round(nrow(ab)*4/5)) 
+length(sub) 
+ab_train<-ab[sub,]#take 4/5 of the data as the training set
+ab_test<-ab[-sub,]#take 1/5 of the data as the testing set
+```
+
+```{r}
+#Linear Model
+ab_lm <- lm(`Rings`~`Sex`+`Diameter`+`Length`+`Height`+`Whole weight`+`Shucked weight`+`Viscera weight`+`Shell weight`,data=ab_train)
+summary(ab_lm)
+ab_lm_rings<-predict(ab_lm, ab_test)
+ab_lm_prage<-round(ab_lm_rings+1.5)
+ab_test_age<-round(ab_test$Rings+1.5)
+
+# calculate MAE, MSE, RMSE and VIF
+library(car)
+maefun<-function(pred,obs) mean(abs(pred-obs))
+msefun<-function(pred,obs) mean((pred-obs)^2)
+nmsefun<-function(pred,obs) mean((pred-obs)^2)/mean((mean(obs)-obs)^2)
+
+lm_mae=maefun(ab_lm_prage,ab_test_age)
+paste0('MAE_lm=',lm_mae)
+lm_mse=msefun(ab_lm_prage,ab_test_age)
+paste0('MSE_lm=',lm_mse)
+lm_nmse=nmsefun(ab_lm_prage,ab_test_age)
+paste0('NMSE=',lm_nmse)
+lm_vif<-vif(ab_lm)
+lm_vif
+
+library(scatterplot3d)
+fit_2_sp<- scatterplot3d(ab_test[,2],ab_lm_rings, ab_test[,5], angle = 50, color = "#CC79A7", pch = 1, ylab = "Rings (ft)", xlab = "Length (mm)", zlab = "Whole weight (g)")
+```
+
+```{r}
+#AIC stepforward
+none_mod <- lm(Rings ~ 1, data = ab_train) 
+full_mod <- lm(Rings ~(.)^2, data = ab_train) 
+library(MASS)
+ab_fs= stepAIC(none_mod, scope = list(upper = full_mod, lower = ~1), direction = "forward", k = 2, trace = FALSE)
+ab_fs$anova
+summary(ab_fs)
+
+ab_fs_rings<-predict(ab_fs, ab_test)
+ab_fs_prage<-round(ab_fs_rings+1.5)
+
+# calculate MAE, MSE, RMSE and VIF
+fs_mae=maefun(ab_fs_prage,ab_test_age)
+paste0('MAE_las=',fs_mae)
+fs_mse=msefun(ab_fs_prage,ab_test_age)
+paste0('MSE_las=',fs_mse)
+fs_nmse=nmsefun(ab_fs_prage,ab_test_age)
+paste0('NMSE=',fs_nmse)
+fs_vif<-vif(ab_fs)
+fs_vif
+```
+
+```{r}
+#one-hot encoding for sex variable
+library(caret)
+dummy <- dummyVars('~.', data = ab_train)
+newdata <- data.frame(predict(dummy, newdata = ab_train))
+dummy2 <- dummyVars('~.', data = ab_test)
+newtest <- data.frame(predict(dummy2, newdata = ab_test))
+x<-as.matrix(newdata[,1:9])
+y<-as.matrix(newdata[,10])
+
+#Ridge regression
+library(glmnet)
+r1<-glmnet(x=x,y=y,family = "gaussian",alpha = 0)            
+plot(r1,xvar="lambda")
+r1cv<-cv.glmnet(x=x,y=y,family="gaussian",alpha=0,nfolds = 10)
+plot(r1cv)
+rimin<-glmnet(x=x,y=y,family = "gaussian",alpha = 0,lambda = r1cv$lambda.min)
+coef(rimin)
+rimin<-glmnet(x=x,y=y,family = "gaussian",alpha = 0,lambda = r1cv$lambda.1se)
+coef(rimin)
+#library(ridge)
+#mod <- linearRidge(Rings ~ ., data = newdata,lambda = r1cv$lambda.min)
+#summary(mod)
+
+#LASSO regression
+library(lars)
+ab_lar<-lars(x,y,type="lasso")
+plot(ab_lar)
+
+f1 = glmnet(x, y, family="mgaussian", nlambda=100, alpha=1)
+print(f1)
+plot(f1, xvar="lambda", label=TRUE)
+cvfit=cv.glmnet(x,y)
+plot(cvfit)
+l.coef1<-coef(cvfit$glmnet.fit,s=cvfit$lambda.min,exact=F)
+l.coef1
+l.coef2<-coef(cvfit$glmnet.fit,s=cvfit$lambda.1se,exact=F)
+l.coef2
+ab_las<-glm(Rings~.,family="gaussian",data=newdata)
+ab_las<-glm(Rings~`SexI`+`SexNI`+`Height`+`X.Shucked.weight.`+`X.Shell.weight.`,family="gaussian",data=newdata)
+
+ab_las_rings<-predict(ab_las, newtest)
+ab_las_prage<-round(ab_las_rings+1.5)
+
+# calculate MAE, MSE, RMSE and VIF
+las_mae=maefun(ab_las_prage,ab_test_age)
+paste0('MAE_las=',las_mae)
+las_mse=msefun(ab_las_prage,ab_test_age)
+paste0('MSE_las=',las_mse)
+las_nmse=nmsefun(ab_las_prage,ab_test_age)
+paste0('NMSE=',las_nmse)
+```
+
+```{r}
+library(randomForest)
+set.seed(100)
+ab_rf=randomForest(Rings~.,data=newdata,ntree=800,importance=TRUE,proximity=TRUE)
+print(ab_rf)
+importance(ab_rf,type=1)
+plot(ab_rf)
+
+ab_rf_rings<-predict(ab_rf, newtest)
+ab_rf_prage<-round(ab_rf_rings+1.5)
+
+# calculate MAE, MSE, RMSE and VIF
+rf_mae=maefun(ab_rf_prage,ab_test_age)
+paste0('MAE_las=',rf_mae)
+rf_mse=msefun(ab_rf_prage,ab_test_age)
+paste0('MSE_las=',rf_mse)
+rf_nmse=nmsefun(ab_rf_prage,ab_test_age)
+paste0('NMSE=',rf_nmse)
+```
+
+
+```{r}
+good_number<-as.matrix(which(abs(as.matrix(ab_rf_rings)-ab_test$Rings)<2))
+bad_number<-as.matrix(which(abs(as.matrix(ab_rf_rings)-ab_test$Rings)>2))
+good_age <- c()
+bad_age <- c()
+for (i in (1:nrow(good_number))){
+  good_age[i] <- ab_test$Rings[good_number[i, 1]]
+}
+for (j in (1:nrow(bad_number))){
+  bad_age[j] <- ab_test$Rings[bad_number[j, 1]]
+}
+
+hist(good_age)
+hist(bad_age)
+
+length(good_age[good_age>12])/length(ab_test$Rings[ab_test$Rings>12])
+length(good_age[good_age<12])/length(ab_test$Rings[ab_test$Rings<12])
+length(bad_age[bad_age>12])/length(ab_test$Rings[ab_test$Rings>12])
+length(bad_age[bad_age<12])/length(ab_test$Rings[ab_test$Rings<12])
+
+```
+
+```{r}
+#qq plot, residual plot, anova, summary
+par(mfrow=c(2,2))
+plot(ab_las)
+anova(ab_las)
+summary(ab_las)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
